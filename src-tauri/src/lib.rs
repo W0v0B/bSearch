@@ -1,8 +1,9 @@
 // src-tauri/src/lib.rs
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use global_hotkey::{GlobalHotKeyManager, HotKey, hotkey::HotKeyState};
-use tauri::{Manager, Runtime, Window, State};
+use global_hotkey::{GlobalHotKeyManager};
+use global_hotkey::hotkey::HotKey;
+use tauri::{Manager, Runtime, Window, State, Emitter};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Serialize, Deserialize};
 use std::process::Command;
 use std::sync::Arc;
+use keyboard_types::Code;
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -95,7 +97,7 @@ fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Re
 // 打开URL的命令
 #[tauri::command]
 async fn open_url(url: &str) -> Result<(), String> {
-    match tauri_plugin_opener::open(url) {
+    match tauri_plugin_opener::open_url(url, Option::<&str>::None) {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("打开URL失败: {}", e))
     }
@@ -147,28 +149,23 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
     let hotkey_manager = GlobalHotKeyManager::new()?;
     
     // 定义热键: Shift+Space
-    let hotkey = HotKey::new(Some(global_hotkey::modifier::SHIFT), global_hotkey::key::Space);
+    let hotkey = HotKey::new(Some(global_hotkey::hotkey::Modifiers::SHIFT), Code::Space);
     hotkey_manager.register(hotkey)?;
     
     // 创建热键监听线程
     std::thread::spawn(move || {
-        for event in GlobalHotKeyManager::event_receiver().iter() {
-            match event.0 {
-                HotKeyState::Released => {
-                    // 切换窗口可见性
-                    if let Some(window) = app_handle.get_window("theUniqueLabel") {
-                        let visible = window.is_visible().unwrap_or(false);
-                        if visible {
-                            let _ = window.hide();
-                            let _ = window.emit("hide", {});
-                        } else {
-                            let _ = window.show();
-                            let _ = window.emit("show", {});
-                            let _ = window.set_focus();
-                        }
-                    }
-                },
-                _ => {}
+        for _event in GlobalHotKeyManager::event_receiver().iter() {
+            // 每次热键触发都切换窗口可见性
+            if let Some(window) = app_handle.get_webview_window("theUniqueLabel") {
+                let visible = window.is_visible().unwrap_or(false);
+                if visible {
+                    let _ = window.hide();
+                    let _ = window.emit("hide", {});
+                } else {
+                    let _ = window.show();
+                    let _ = window.emit("show", {});
+                    let _ = window.set_focus();
+                }
             }
         }
     });
@@ -272,7 +269,7 @@ pub fn run() {
             }
             
             // 创建并显示主窗口
-            let main_window = app.get_window("theUniqueLabel").unwrap();
+            let main_window = app.get_webview_window("theUniqueLabel").unwrap();
             main_window.set_title("BSearch").unwrap();
             
             // 初始设置窗口隐藏，直到触发热键
