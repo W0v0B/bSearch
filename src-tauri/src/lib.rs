@@ -15,7 +15,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Serialize, Deserialize};
 use std::process::Command;
-use std::sync::Arc;
+use tauri_plugin_shell::ShellExt;
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -38,7 +38,7 @@ fn greet(name: &str) -> String {
 
 // 搜索应用的命令
 #[tauri::command]
-fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
+fn search_apps(query: &str, _app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
     let matcher = SkimMatcherV2::default();
     let mut results = Vec::new();
     
@@ -101,7 +101,7 @@ fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Re
 async fn open_url(url: &str) -> Result<(), String> {
     match tauri_plugin_opener::open_url(url, Option::<&str>::None) {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("打开URL失败: {}", e))
+        Err(e) => Err(format!("打开URL失败: {}", e.to_string())) // 使用 e.to_string() 获取错误信息
     }
 }
 
@@ -255,7 +255,7 @@ fn is_executable(path: &std::path::Path) -> bool {
 }
 
 // 辅助函数: 获取应用图标路径
-fn get_app_icon(app_path: &str) -> Option<String> {
+fn get_app_icon(_app_path: &str) -> Option<String> {
     // 这个函数实现可能比较复杂，需要根据操作系统使用不同的API
     // 这里提供一个简化的实现，实际应用中可能需要更复杂的逻辑
     
@@ -285,7 +285,6 @@ fn get_app_icon(app_path: &str) -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // 设置全局热键
             if let Err(e) = setup_global_hotkeys(app) {
                 eprintln!("设置全局热键失败: {}", e);
             }
@@ -300,7 +299,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppFrequencyTracker(Mutex::new(HashMap::new())))
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init()) // 确认 shell 插件初始化方式，如果默认则可能不需要
         .invoke_handler(tauri::generate_handler![
             greet,
             search_apps,
