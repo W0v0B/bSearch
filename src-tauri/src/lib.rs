@@ -6,7 +6,7 @@ use global_hotkey::{
     GlobalHotKeyEvent,
     hotkey::{Code, HotKey, Modifiers},
 };
-use tauri::{Manager, Runtime, Window, State, Emitter, AppHandle};
+use tauri::{Manager, Runtime, State, Emitter, AppHandle};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,7 +15,6 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Serialize, Deserialize};
 use std::process::Command;
-use std::sync::Arc;
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -40,11 +39,16 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
     let matcher = SkimMatcherV2::default();
-    let mut results = Vec::new();
-    
+    // 修改 results 的类型，存储 (综合得分, AppResult)
+    let mut results: Vec<(i64, AppResult)> = Vec::new();
+
     // 获取系统应用目录
     let app_paths = get_app_directories();
-    
+
+    // 提前获取 tracker 的锁，避免在循环内频繁加锁/解锁 (虽然在这个场景下影响可能不大)
+    // 但更常见的做法是在需要时获取
+    // let tracker_guard = app_tracker.0.lock().unwrap(); // 或者在循环内获取
+
     for app_dir in app_paths {
         // 遍历应用目录中的可执行文件
         for entry in WalkDir::new(app_dir)
@@ -57,25 +61,40 @@ fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<
             let file_name = entry.path().file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Unknown App");
-            
+
             // 使用模糊匹配来搜索
             if let Some(score) = matcher.fuzzy_match(file_name, query) {
-                results.push((score, AppResult {
+                // 获取该应用的启动频率
+                let frequency = {
+                    // 在需要时获取锁
+                    let tracker_guard = app_tracker.0.lock().unwrap();
+                    // 使用 path 作为 key，因为 launch_app 中也是用 path
+                    *tracker_guard.get(&path).unwrap_or(&0) // 如果没有记录，频率视为 0
+                }; // 锁在这里释放
+
+                // --- 计算综合得分 ---
+                // 简单策略：模糊匹配分 + 频率 * 权重因子
+                // 权重因子可以调整，用来控制频率对排序的影响程度
+                // 将 u32 频率转换为 i64 以便和 score 相加
+                const FREQUENCY_WEIGHT: i64 = 10; // 示例权重，可以调整
+                let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
+
+                results.push((combined_score, AppResult {
                     result_type: "app".to_string(),
                     title: file_name.to_string(),
-                    path: path.clone(),
+                    path: path.clone(), // path 仍然存储，用于启动和获取图标
                     icon_path: get_app_icon(&path),
                 }));
             }
         }
     }
-    
-    // 按匹配分数排序
+
+    // 按 *综合得分* 降序排序
     results.sort_by(|a, b| b.0.cmp(&a.0));
-    
+
     // 只返回匹配的应用，不包括分数
     results.into_iter()
-        .map(|(_, app)| app)
+        .map(|(_, app)| app) // 提取 AppResult
         .take(10) // 只返回前10个结果
         .collect()
 }
@@ -289,21 +308,22 @@ pub fn run() {
             if let Err(e) = setup_global_hotkeys(app) {
                 eprintln!("设置全局热键失败: {}", e);
             }
-            
+
             // 创建并显示主窗口
             let main_window = app.get_webview_window("main").unwrap();
             main_window.set_title("BSearch").unwrap();
-            
+
             // 初始设置窗口隐藏，直到触发热键
             main_window.hide().unwrap();
-            
+
             Ok(())
         })
+        // 确保 AppFrequencyTracker 被正确管理
         .manage(AppFrequencyTracker(Mutex::new(HashMap::new())))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            search_apps,
+            search_apps, // 使用修改后的 search_apps
             launch_app,
             open_url,
             search_web,
