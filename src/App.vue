@@ -422,6 +422,13 @@ onMounted(() => {
   appWindow.listen('hide', () => {
     hideSearch();
   });
+  appWindow.listen('window-show', () => {
+    showSearch();
+  });
+  
+  appWindow.listen('window-hide', () => {
+    hideSearch();
+  });
 });
 
 onUnmounted(() => {
