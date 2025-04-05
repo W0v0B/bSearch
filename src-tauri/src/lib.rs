@@ -1,9 +1,12 @@
 // src-tauri/src/lib.rs
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use global_hotkey::{GlobalHotKeyManager};
-use global_hotkey::hotkey::HotKey;
-use tauri::{Manager, Runtime, Window, State, Emitter};
+use global_hotkey::{
+    GlobalHotKeyManager,
+    GlobalHotKeyEvent,
+    hotkey::{Code, HotKey, Modifiers},
+};
+use tauri::{Manager, Runtime, Window, State, Emitter, AppHandle};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,7 +16,6 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Serialize, Deserialize};
 use std::process::Command;
 use std::sync::Arc;
-use keyboard_types::Code;
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -145,31 +147,51 @@ fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResu
 
 // 设置全局热键的处理函数
 fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    let app_handle = app.handle();
+    let app_handle: AppHandle<R> = app.app_handle().clone();
+
     let hotkey_manager = GlobalHotKeyManager::new()?;
-    
-    // 定义热键: Shift+Space
-    let hotkey = HotKey::new(Some(global_hotkey::hotkey::Modifiers::SHIFT), Code::Space);
+    let hotkey = HotKey::new(Some(Modifiers::SHIFT), Code::Space);
     hotkey_manager.register(hotkey)?;
-    
-    // 创建热键监听线程
+    println!("Hotkey registered: Shift+Space (id: {})", hotkey.id());
+
+    let receiver = GlobalHotKeyEvent::receiver();
+
     std::thread::spawn(move || {
-        for _event in GlobalHotKeyManager::event_receiver().iter() {
-            // 每次热键触发都切换窗口可见性
+        println!("Hotkey listener thread started. Waiting for events...");
+        for event in receiver.iter() {
+            println!("Hotkey event received: id={}", event.id);
+
             if let Some(window) = app_handle.get_webview_window("theUniqueLabel") {
-                let visible = window.is_visible().unwrap_or(false);
-                if visible {
-                    let _ = window.hide();
-                    let _ = window.emit("hide", {});
-                } else {
-                    let _ = window.show();
-                    let _ = window.emit("show", {});
-                    let _ = window.set_focus();
+                match window.is_visible() {
+                    Ok(visible) => {
+                        if visible {
+                            println!("Hiding window...");
+                            let _ = window.hide();
+                            if let Err(e) = window.emit("window-hidden", ()) {
+                                eprintln!("Failed to emit window-hidden event: {}", e);
+                            }
+                        } else {
+                            println!("Showing window...");
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            if let Err(e) = window.emit("window-shown", ()) {
+                                eprintln!("Failed to emit window-shown event: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to check window visibility: {}", e);
+                    }
                 }
+            } else {
+                eprintln!("Window with label 'theUniqueLabel' not found.");
             }
         }
+        println!("Hotkey listener thread finished.");
     });
-    
+
+    app.manage(hotkey_manager);
+
     Ok(())
 }
 
