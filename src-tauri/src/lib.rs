@@ -161,7 +161,7 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
         for event in receiver.iter() {
             println!("Hotkey event received: id={}", event.id);
 
-            if let Some(window) = app_handle.get_webview_window("theUniqueLabel") {
+            if let Some(window) = app_handle.get_webview_window("main") {
                 match window.is_visible() {
                     Ok(visible) => {
                         if visible {
@@ -184,7 +184,7 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
                     }
                 }
             } else {
-                eprintln!("Window with label 'theUniqueLabel' not found.");
+                eprintln!("Window with label 'main' not found.");
             }
         }
         println!("Hotkey listener thread finished.");
@@ -291,7 +291,7 @@ pub fn run() {
             }
             
             // 创建并显示主窗口
-            let main_window = app.get_webview_window("theUniqueLabel").unwrap();
+            let main_window = app.get_webview_window("main").unwrap();
             main_window.set_title("BSearch").unwrap();
             
             // 初始设置窗口隐藏，直到触发热键

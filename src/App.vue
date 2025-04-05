@@ -171,7 +171,7 @@ import { invoke } from '@tauri-apps/api/core'; // Tauri核心API，用于与后�
 import { Window } from "@tauri-apps/api/window" // Tauri窗口管理API
 
 // 创建应用窗口实例
-const appWindow = new Window('theUniqueLabel');
+const appWindow = new Window('main');
 
 // 状态管理部分：
 // 控制搜索界面的显示状态
@@ -415,18 +415,11 @@ onMounted(() => {
   }
   
   // 监听窗口事件
-  appWindow.listen('show', () => {
+  appWindow.listen('window-shown', () => {
     showSearch();
   });
   
-  appWindow.listen('hide', () => {
-    hideSearch();
-  });
-  appWindow.listen('window-show', () => {
-    showSearch();
-  });
-  
-  appWindow.listen('window-hide', () => {
+  appWindow.listen('window-hidden', () => {
     hideSearch();
   });
 });
