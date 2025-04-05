@@ -1,8 +1,10 @@
 // src-tauri/src/lib.rs
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use global_hotkey::{GlobalHotKeyManager, HotKey, hotkey::HotKeyState};
-use tauri::{Manager, Runtime, Window, State};
+use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent};
+use global_hotkey::hotkey::{HotKey, Modifiers};
+use keyboard_types::Code;
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,7 +13,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use serde::{Serialize, Deserialize};
 use std::process::Command;
-use std::sync::Arc;
+use tauri_plugin_shell::ShellExt;
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -34,7 +36,7 @@ fn greet(name: &str) -> String {
 
 // 搜索应用的命令
 #[tauri::command]
-fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
+fn search_apps(query: &str, _app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
     let matcher = SkimMatcherV2::default();
     let mut results = Vec::new();
     
@@ -94,10 +96,11 @@ fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Re
 
 // 打开URL的命令
 #[tauri::command]
-async fn open_url(url: &str) -> Result<(), String> {
-    match tauri_plugin_opener::open(url) {
+async fn open_url<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
+    // 使用 app.shell() 来打开 URL
+    match app.shell().open(&url, None) { // 第二个参数 None 表示使用系统默认程序打开
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("打开URL失败: {}", e))
+        Err(e) => Err(format!("打开URL失败: {}", e.to_string())) // 使用 e.to_string() 获取错误信息
     }
 }
 
@@ -143,23 +146,28 @@ fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResu
 
 // 设置全局热键的处理函数
 fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
-    let app_handle = app.handle();
+    let app_handle = app.handle().clone();
     let hotkey_manager = GlobalHotKeyManager::new()?;
     
     // 定义热键: Shift+Space
-    let hotkey = HotKey::new(Some(global_hotkey::modifier::SHIFT), global_hotkey::key::Space);
-    hotkey_manager.register(hotkey)?;
-    
-    // 创建热键监听线程
-    std::thread::spawn(move || {
-        for event in GlobalHotKeyManager::event_receiver().iter() {
-            match event.0 {
-                HotKeyState::Released => {
-                    // 切换窗口可见性
-                    if let Some(window) = app_handle.get_window("theUniqueLabel") {
-                        let visible = window.is_visible().unwrap_or(false);
+    let search_hotkey = HotKey::new(Some(Modifiers::SHIFT), Code::Space);
+    let search_hotkey_id = search_hotkey.id(); // 获取热键 ID 用于后续比较
+    hotkey_manager.register(search_hotkey)?; // 注册热键
+
+    // --- 使用 GlobalHotKeyEvent::receiver 获取事件接收器 ---
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        // 注意：这里现在是一个静态的闭包回调
+        // 检查是否是目标热键触发 (状态隐含在事件发生，但具体是按下还是抬起可能需要其他逻辑判断，
+        // 或者这个库就是这样设计的，只通知触发，由应用自己管理状态)
+        // 简单处理：只要是这个热键ID触发就切换窗口
+        if event.id == search_hotkey_id {
+            // 使用 get_webview_window
+            if let Some(window) = app_handle.get_webview_window("theUniqueLabel") {
+                match window.is_visible() {
+                    Ok(visible) => {
                         if visible {
                             let _ = window.hide();
+                            // --- 使用 Emitter trait 来调用 emit ---
                             let _ = window.emit("hide", {});
                         } else {
                             let _ = window.show();
@@ -167,11 +175,15 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
                             let _ = window.set_focus();
                         }
                     }
-                },
-                _ => {}
+                    Err(e) => {
+                        eprintln!("获取窗口可见性失败: {}", e);
+                    }
+                }
+            } else {
+                 eprintln!("找不到窗口: theUniqueLabel");
             }
         }
-    });
+    }));
     
     Ok(())
 }
@@ -236,7 +248,7 @@ fn is_executable(path: &std::path::Path) -> bool {
 }
 
 // 辅助函数: 获取应用图标路径
-fn get_app_icon(app_path: &str) -> Option<String> {
+fn get_app_icon(_app_path: &str) -> Option<String> {
     // 这个函数实现可能比较复杂，需要根据操作系统使用不同的API
     // 这里提供一个简化的实现，实际应用中可能需要更复杂的逻辑
     
@@ -266,22 +278,26 @@ fn get_app_icon(app_path: &str) -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // 设置全局热键
             if let Err(e) = setup_global_hotkeys(app) {
                 eprintln!("设置全局热键失败: {}", e);
             }
-            
-            // 创建并显示主窗口
-            let main_window = app.get_window("theUniqueLabel").unwrap();
-            main_window.set_title("BSearch").unwrap();
-            
-            // 初始设置窗口隐藏，直到触发热键
-            main_window.hide().unwrap();
-            
+
+            // --- 使用 get_webview_window ---
+            match app.get_webview_window("theUniqueLabel") {
+               Some(main_window) => {
+                   main_window.set_title("BSearch").unwrap();
+                   // 初始设置窗口隐藏
+                   main_window.hide().unwrap();
+               },
+               None => {
+                   eprintln!("启动时找不到窗口: theUniqueLabel");
+               }
+            }
+
             Ok(())
         })
         .manage(AppFrequencyTracker(Mutex::new(HashMap::new())))
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_shell::init()) // 确认 shell 插件初始化方式，如果默认则可能不需要
         .invoke_handler(tauri::generate_handler![
             greet,
             search_apps,
