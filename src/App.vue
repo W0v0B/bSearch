@@ -165,27 +165,42 @@
 </template>
 
 <script setup lang="ts">
+// 导入必要的Vue组合式API和Tauri API
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
-import { Window } from "@tauri-apps/api/window"
+import { invoke } from '@tauri-apps/api/core'; // Tauri核心API，用于与后端通信
+import { Window } from "@tauri-apps/api/window" // Tauri窗口管理API
+
+// 创建应用窗口实例
 const appWindow = new Window('theUniqueLabel');
 
-// 数据和状态
-const isVisible = ref(true);
-const searchTerm = ref('');
-const results = ref<any[]>([]);
-const selectedIndex = ref(0);
-const isLoading = ref(false);
-const searchInput = ref<HTMLInputElement | null>(null);
-const searchContainer = ref<HTMLDivElement | null>(null);
-const recentSearches = ref<string[]>([]);
-const frequentApps = ref<any[]>([]);
+// 状态管理部分：
+// 控制搜索界面的显示状态
+const isVisible = ref(false); // 是否显示搜索界面
+const searchTerm = ref(''); // 当前搜索词
+const results = ref<any[]>([]); // 搜索结果列表
+const selectedIndex = ref(0); // 当前选中的结果索引
+const isLoading = ref(false); // 加载状态
+const searchInput = ref<HTMLInputElement | null>(null); // 搜索输入框引用
+const searchContainer = ref<HTMLDivElement | null>(null); // 搜索容器引用
+const recentSearches = ref<string[]>([]); // 最近搜索记录
+const frequentApps = ref<any[]>([]); // 常用应用列表
 
-// 过滤结果
-const appResults = computed(() => results.value.filter(r => r.type === 'app'));
-const webResults = computed(() => results.value.filter(r => r.type === 'web'));
+// 结果过滤器：
+// 根据类型过滤应用搜索结果
+const appResults = computed(() => {
+  return results.value.filter(r => r.type === 'app');
+});
+const webResults = computed(() => {
+  return results.value.filter(r => r.type === 'web');
+});
 
-// 获取绝对索引（用于跨分类选择）
+/**
+ * 获取绝对索引（用于跨分类选择）
+ * 
+ * @param index - 当前分类内的索引
+ * @param type - 结果类型 ('app' 或 'web')
+ * @returns 跨分类的绝对索引
+ */
 function getAbsoluteIndex(index: number, type: 'app' | 'web'): number {
   if (type === 'app') {
     return index;
@@ -194,13 +209,24 @@ function getAbsoluteIndex(index: number, type: 'app' | 'web'): number {
   }
 }
 
-// 搜索方法
-async function performSearch() {
+/**
+ * 执行搜索操作
+ * 
+ * 处理逻辑：
+ * 1. 检查搜索词是否为空
+ * 2. 设置加载状态
+ * 3. 获取应用搜索结果
+ * 4. 生成网络搜索结果
+ * 5. 合并结果并重置选中索引
+ */
+async function performSearch(): Promise<void> {
+  // 检查搜索词是否为空
   if (!searchTerm.value.trim()) {
     results.value = [];
     return;
   }
   
+  // 设置加载状态
   isLoading.value = true;
   
   try {
@@ -235,8 +261,16 @@ async function performSearch() {
   }
 }
 
-// 处理键盘导航
-function handleKeyDown(event: KeyboardEvent) {
+/**
+ * 处理键盘导航事件
+ * 
+ * 支持的按键：
+ * - ArrowDown: 向下选择
+ * - ArrowUp: 向上选择
+ * - Enter: 执行选中结果
+ * - Escape: 关闭搜索界面
+ */
+function handleKeyDown(event: KeyboardEvent): void {
   switch (event.key) {
     case 'ArrowDown':
       event.preventDefault();
@@ -261,29 +295,42 @@ function handleKeyDown(event: KeyboardEvent) {
   }
 }
 
-// 执行结果（打开应用或搜索）
-async function executeResult(result: any) {
-  if (result.type === 'app') {
-    try {
-      await invoke('launch_app', { appPath: result.path });
-      addToRecentSearches(searchTerm.value);
-      hideSearch();
-    } catch (error) {
-      console.error('启动应用失败:', error);
+/**
+ * 执行选中结果
+ * 
+ * 处理逻辑：
+ * 1. 根据结果类型执行不同操作
+ * 2. 添加到最近搜索记录
+ * 3. 隐藏搜索界面
+ */
+async function executeResult(result: any): Promise<void> {
+  try {
+    switch(result.type) {
+      case 'app':
+        await invoke('launch_app', { appPath: result.path });
+        break;
+      case 'web':
+        await invoke('open_url', { url: result.url });
+        break;
     }
-  } else if (result.type === 'web') {
-    try {
-      await invoke('open_url', { url: result.url });
-      addToRecentSearches(searchTerm.value);
-      hideSearch();
-    } catch (error) {
-      console.error('打开URL失败:', error);
-    }
+    
+    // 成功处理后添加到最近搜索并关闭
+    addToRecentSearches(searchTerm.value);
+    hideSearch();
+  } catch (error) {
+    console.error(`${result.type === 'app' ? '启动应用' : '打开URL'}失败:`, error);
   }
 }
 
-// 网络搜索
-async function searchWeb(query: string) {
+/**
+ * 执行网络搜索
+ * 
+ * 处理逻辑：
+ * 1. 调用Tauri API执行网络搜索
+ * 2. 添加到最近搜索记录
+ * 3. 隐藏搜索界面
+ */
+async function searchWeb(query: string): Promise<void> {
   try {
     await invoke('search_web', { query });
     addToRecentSearches(query);
@@ -384,7 +431,7 @@ onUnmounted(() => {
 // 全局按键处理
 function handleGlobalKeyDown(event: KeyboardEvent) {
   // 处理特殊快捷键
-  if (event.altKey && event.code === 'Space') {
+  if (event.shiftKey && event.code === 'Space') {
     event.preventDefault();
     if (isVisible.value) {
       hideSearch();
