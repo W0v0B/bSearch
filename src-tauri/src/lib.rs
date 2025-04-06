@@ -7,7 +7,6 @@ use std::process::Command;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use fuzzy_matcher::FuzzyMatcher;
-// use fuzzy_matcher::skim::SkimMatcherV2;
 use winreg::{HKEY, RegKey};
 use winreg::enums::*;
 use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{Code, HotKey, Modifiers}};
@@ -262,59 +261,6 @@ pub fn search_windows_apps(query: &str) -> Vec<AppInfo> {
         .map(|(_, app)| app)
         .collect()
 }
-
-// // 辅助函数: 获取应用目录
-// fn get_app_directories() -> Vec<PathBuf> {
-//     let mut app_dirs = Vec::new();
-    
-//     // 根据操作系统添加不同的应用目录
-//     #[cfg(target_os = "windows")]
-//     {
-//         if let Some(program_files) = env::var_os("ProgramFiles") {
-//             app_dirs.push(PathBuf::from(program_files));
-//         }
-//         if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
-//             app_dirs.push(PathBuf::from(program_files_x86));
-//         }
-//     }
-    
-//     app_dirs
-// }
-
-// // 辅助函数: 检查文件是否是可执行文件
-// fn is_executable(path: &std::path::Path) -> bool {
-
-//     #[cfg(windows)]
-//     {
-//         if let Some(extension) = path.extension() {
-//             // 只检查常见的Windows可执行文件扩展名
-//             return extension.eq_ignore_ascii_case("exe") || 
-//                    extension.eq_ignore_ascii_case("lnk"); // 包括快捷方式
-//         }
-//     }
-    
-//     false
-// }
-
-// // 辅助函数: 获取应用图标路径
-// fn get_app_icon(app_path: &str) -> Option<String> {
-    
-//     #[cfg(target_os = "windows")]
-//     {
-//         // 这里可以使用Windows API来从.exe或.lnk文件提取图标
-//         // 但这需要额外的库支持，如winapi
-        
-//         // 简化版本可以直接返回固定图标路径
-//         if app_path.to_lowercase().ends_with(".lnk") {
-//             return Some("/windows-shortcut-icon.svg".to_string());
-//         } else if app_path.to_lowercase().ends_with(".exe") {
-//             return Some("/windows-app-icon.svg".to_string());
-//         }
-//     }
-    
-//     // 使用默认图标
-//     None
-// }
 
 // 搜索应用的命令
 #[tauri::command]
