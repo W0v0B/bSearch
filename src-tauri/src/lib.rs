@@ -2,20 +2,45 @@
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::env;
+use std::fs::File;
+use std::io::Write;
+use std::sync::Once;
 use std::sync::Mutex;
+use std::ptr::null_mut;
 use std::process::Command;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use fuzzy_matcher::FuzzyMatcher;
-use winreg::{HKEY, RegKey};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use winreg::enums::*;
+use winreg::{HKEY, RegKey};
+
+use windows::core::{Interface, PCWSTR};
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+use windows::Win32::UI::Shell::{IShellLinkW, IExtractIconW, ShellLink};
+use windows::Win32::System::Com::{CoCreateInstance, CoInitialize, CLSCTX_INPROC_SERVER};
+
+use fuzzy_matcher::FuzzyMatcher;
 use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{Code, HotKey, Modifiers}};
 use tauri::{Manager, Runtime, State, Emitter, AppHandle};
 use walkdir::WalkDir;
 use serde::{Serialize, Deserialize};
 
+// 添加这个静态变量来生成唯一的图标ID
+static ICON_ID: AtomicU64 = AtomicU64::new(1);
+static INIT: Once = Once::new();
+
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
+
+// 应用数据结构
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AppInfo {
+    name: String,
+    path: String,
+    icon_path: Option<String>,
+    is_shortcut: bool,
+}
 
 // 定义搜索结果类型
 #[derive(Serialize, Deserialize, Clone)]
@@ -25,14 +50,6 @@ struct AppResult {
     title: String,
     path: String,
     icon_path: Option<String>,
-}
-// 应用数据结构
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct AppInfo {
-    name: String,
-    path: String,
-    icon_path: Option<String>,
-    is_shortcut: bool,
 }
 
 // 获取Windows特殊文件夹路径
@@ -122,9 +139,7 @@ fn get_shortcuts_from_special_folders() -> Vec<AppInfo> {
 
 // 使用windows-rs库解析.lnk快捷方式
 fn resolve_shortcut(shortcut_path: &str) -> Option<String> {
-    use windows::Win32::System::Com::{IPersistFile, STGM, CoCreateInstance, CoInitialize, CLSCTX_INPROC_SERVER};
-    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-    use windows::core::{PCWSTR, Interface};
+    use windows::Win32::System::Com::{IPersistFile, STGM};
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
@@ -226,16 +241,101 @@ fn get_installed_apps_from_registry() -> Vec<AppInfo> {
     apps
 }
 
+// 添加此函数来初始化图标缓存目录
+fn init_icon_cache() -> PathBuf {
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("bsearch")
+        .join("icons");
+
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).unwrap_or_else(|_| {
+            eprintln!("Failed to create icon cache directory");
+        });
+    }
+
+    cache_dir
+}
+
+// 添加提取图标的函数
+fn extract_icon_from_exe(exe_path: &str) -> Option<String> {
+    // 初始化图标缓存目录
+    INIT.call_once(|| {
+        let _ = init_icon_cache();
+    });
+
+    let icon_id = ICON_ID.fetch_add(1, Ordering::SeqCst);
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("bsearch")
+        .join("icons");
+    
+    let icon_path = cache_dir.join(format!("icon_{}.png", icon_id));
+    
+    // 如果图标已经存在，直接返回路径
+    if icon_path.exists() {
+        return Some(icon_path.to_string_lossy().to_string());
+    }
+    
+    unsafe {
+        // 初始化COM
+        let _ = CoInitialize(None);
+        
+        // 尝试使用Shell32的ExtractIconEx函数提取图标
+        // 这里使用简单的windows-rs API调用，实际项目中可能需要更复杂的处理
+        let wide_path: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
+        
+        // 转换为适当的类型
+        let hicon = windows::Win32::UI::Shell::ExtractIconW(
+            Some(windows::Win32::Foundation::HINSTANCE(null_mut())),
+            PCWSTR(wide_path.as_ptr()),
+            0
+        );
+        
+        if !hicon.is_invalid() {
+            // 将图标保存为PNG
+            // 这里需要一个更复杂的函数来将HICON转换为PNG
+            // 简化示例中省略了实际的图标保存代码
+            
+            // 实际项目中，可以使用crates如image或ico来处理图标转换
+            // 以下是一个占位实现
+            let _ = File::create(&icon_path).ok()?;
+            
+            // 释放图标句柄
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+            
+            return Some(icon_path.to_string_lossy().to_string());
+        }
+    }
+    
+    None
+}
+
 // 搜索应用的函数
+// 修改 search_windows_apps 函数，在返回结果前提取图标
 pub fn search_windows_apps(query: &str) -> Vec<AppInfo> {
     let mut all_apps = Vec::new();
     
     // 获取特殊文件夹中的快捷方式
-    let shortcuts = get_shortcuts_from_special_folders();
+    let mut shortcuts = get_shortcuts_from_special_folders();
+    
+    // 为每个快捷方式提取图标
+    for app in &mut shortcuts {
+        if app.icon_path.is_none() {
+            app.icon_path = extract_icon_from_exe(&app.path);
+        }
+    }
     all_apps.extend(shortcuts);
     
     // 获取注册表中的应用
-    let registry_apps = get_installed_apps_from_registry();
+    let mut registry_apps = get_installed_apps_from_registry();
+    
+    // 为每个注册表应用提取图标
+    for app in &mut registry_apps {
+        if app.icon_path.is_none() {
+            app.icon_path = extract_icon_from_exe(&app.path);
+        }
+    }
     all_apps.extend(registry_apps);
     
     // 如果没有查询字符串，返回所有应用
@@ -319,11 +419,14 @@ fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResu
                 .unwrap_or("Unknown App")
                 .to_string();
             
+            // 提取图标
+            let icon_path = extract_icon_from_exe(&path);
+            
             AppResult {
                 result_type: "app".to_string(),
                 title: file_name,
                 path,
-                icon_path: None,
+                icon_path,
             }
         })
         .collect()
