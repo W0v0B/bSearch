@@ -1,20 +1,19 @@
 // src-tauri/src/lib.rs
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use global_hotkey::{
-    GlobalHotKeyManager,
-    GlobalHotKeyEvent,
-    hotkey::{Code, HotKey, Modifiers},
-};
-use tauri::{Manager, Runtime, State, Emitter, AppHandle};
+use std::env;
 use std::sync::Mutex;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use walkdir::WalkDir;
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
-use serde::{Serialize, Deserialize};
 use std::process::Command;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use fuzzy_matcher::FuzzyMatcher;
+// use fuzzy_matcher::skim::SkimMatcherV2;
+use winreg::{HKEY, RegKey};
+use winreg::enums::*;
+use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{Code, HotKey, Modifiers}};
+use tauri::{Manager, Runtime, State, Emitter, AppHandle};
+use walkdir::WalkDir;
+use serde::{Serialize, Deserialize};
 
 // 定义应用频率跟踪器
 struct AppFrequencyTracker(Mutex<HashMap<String, u32>>);
@@ -28,89 +27,360 @@ struct AppResult {
     path: String,
     icon_path: Option<String>,
 }
-
-// 应用启动历史记录
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+// 应用数据结构
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AppInfo {
+    name: String,
+    path: String,
+    icon_path: Option<String>,
+    is_shortcut: bool,
 }
+
+// 获取Windows特殊文件夹路径
+fn get_special_folders() -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+    
+    // 用户桌面
+    if let Ok(userprofile) = env::var("USERPROFILE") {
+        folders.push(PathBuf::from(userprofile).join("Desktop"));
+    }
+    
+    // 公共桌面
+    if let Ok(public) = env::var("PUBLIC") {
+        folders.push(PathBuf::from(public).join("Desktop"));
+    }
+    
+    // 用户开始菜单
+    if let Ok(appdata) = env::var("APPDATA") {
+        folders.push(PathBuf::from(appdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
+    }
+    
+    // 公共开始菜单
+    if let Ok(programdata) = env::var("ProgramData") {
+        folders.push(PathBuf::from(programdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
+    }
+    
+    folders
+}
+
+// 在目录中查找可执行文件
+fn find_executables_in_dir(dir: &Path, app_name: &str, apps: &mut Vec<AppInfo>) {
+    for entry in WalkDir::new(dir)
+        .max_depth(2) // 限制搜索深度
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "exe")) {
+        
+        apps.push(AppInfo {
+            name: app_name.to_string(),
+            path: entry.path().to_string_lossy().to_string(),
+            icon_path: None,
+            is_shortcut: false,
+        });
+        
+        // 通常只需要找到第一个可执行文件
+        break;
+    }
+}
+
+// 从特殊文件夹获取快捷方式
+fn get_shortcuts_from_special_folders() -> Vec<AppInfo> {
+    let mut shortcuts = Vec::new();
+    let special_folders = get_special_folders();
+    
+    for folder in special_folders {
+        if !folder.exists() {
+            continue;
+        }
+        
+        for entry in WalkDir::new(folder)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext.to_string_lossy().to_lowercase() == "lnk")) {
+            
+            let path = entry.path();
+            let shortcut_path = path.to_string_lossy().to_string();
+            
+            // 使用windows-rs库解析快捷方式
+            if let Some(target_path) = resolve_shortcut(&shortcut_path) {
+                let name = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                
+                shortcuts.push(AppInfo {
+                    name,
+                    path: target_path,
+                    icon_path: None,
+                    is_shortcut: true,
+                });
+            }
+        }
+    }
+    
+    shortcuts
+}
+
+// 使用windows-rs库解析.lnk快捷方式
+fn resolve_shortcut(shortcut_path: &str) -> Option<String> {
+    use windows::Win32::System::Com::{IPersistFile, STGM, CoCreateInstance, CoInitialize, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::{PCWSTR, Interface};
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    unsafe {
+        // 初始化COM
+        let _ = CoInitialize(None);
+
+        // 创建ShellLink对象
+        let shell_link: IShellLinkW = CoCreateInstance(
+            &ShellLink,
+            None,
+            CLSCTX_INPROC_SERVER
+        ).ok()?;
+
+        // 获取IPersistFile接口
+        let persist_file: IPersistFile = shell_link.cast().ok()?;
+        
+        // 将shortcut_path转换为宽字符字符串
+        let wide_path: Vec<u16> = shortcut_path.encode_utf16().chain(std::iter::once(0)).collect();
+        
+        // 加载快捷方式文件
+        persist_file.Load(PCWSTR(wide_path.as_ptr()), STGM::default()).ok()?;
+
+        // 获取目标路径
+        let mut buffer = [0u16; 260]; // MAX_PATH
+        let mut fd = windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW::default();
+        
+        shell_link.GetPath(
+            &mut buffer,
+            &mut fd,
+            0
+        ).ok()?;
+        
+        // 将宽字符字符串转换为Rust字符串
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        let os_string = OsString::from_wide(&buffer[0..len]);
+        
+        os_string.into_string().ok()
+    }
+}
+
+// 从Uninstall注册表键获取应用
+fn get_uninstall_apps(hkey: HKEY, apps: &mut Vec<AppInfo>) {
+    if let Ok(uninstall) = RegKey::predef(hkey)
+        .open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall") {
+        
+        for key_result in uninstall.enum_keys().flatten() {
+            if let Ok(app_key) = uninstall.open_subkey(&key_result) {
+                // 只处理有DisplayName和InstallLocation的项
+                if let (Ok(name), Ok(location)) = (
+                    app_key.get_value::<String, _>("DisplayName"),
+                    app_key.get_value::<String, _>("InstallLocation")
+                ) {
+                    // 查找安装目录中的主程序
+                    if !location.is_empty() {
+                        let location_path = PathBuf::from(&location);
+                        find_executables_in_dir(&location_path, &name, apps);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 从注册表获取已安装应用
+fn get_installed_apps_from_registry() -> Vec<AppInfo> {
+    let mut apps = Vec::new();
+    
+    // 获取App Paths注册表项
+    if let Ok(app_paths) = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths") {
+        
+        for key_result in app_paths.enum_keys().flatten() {
+            if let Ok(app_key) = app_paths.open_subkey(&key_result) {
+                if let Ok(path) = app_key.get_value::<String, _>("") {
+                    let name = Path::new(&key_result)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&key_result)
+                        .to_string();
+                    
+                    apps.push(AppInfo {
+                        name,
+                        path,
+                        icon_path: None,
+                        is_shortcut: false,
+                    });
+                }
+            }
+        }
+    }
+    
+    // 获取已安装应用注册表项（系统范围）
+    get_uninstall_apps(HKEY_LOCAL_MACHINE, &mut apps);
+    
+    // 获取已安装应用注册表项（用户范围）
+    get_uninstall_apps(HKEY_CURRENT_USER, &mut apps);
+    
+    apps
+}
+
+// 搜索应用的函数
+pub fn search_windows_apps(query: &str) -> Vec<AppInfo> {
+    let mut all_apps = Vec::new();
+    
+    // 获取特殊文件夹中的快捷方式
+    let shortcuts = get_shortcuts_from_special_folders();
+    all_apps.extend(shortcuts);
+    
+    // 获取注册表中的应用
+    let registry_apps = get_installed_apps_from_registry();
+    all_apps.extend(registry_apps);
+    
+    // 如果没有查询字符串，返回所有应用
+    if query.is_empty() {
+        return all_apps;
+    }
+    
+    // 按名称进行模糊匹配
+    let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+    let mut matched_apps: Vec<(i64, AppInfo)> = Vec::new();
+    
+    for app in all_apps {
+        if let Some(score) = matcher.fuzzy_match(&app.name.to_lowercase(), &query.to_lowercase()) {
+            matched_apps.push((score, app));
+        }
+    }
+    
+    // 按匹配分数排序
+    matched_apps.sort_by(|a, b| b.0.cmp(&a.0));
+    
+    // 只返回匹配的应用，不包括分数
+    matched_apps.into_iter()
+        .map(|(_, app)| app)
+        .collect()
+}
+
+// // 辅助函数: 获取应用目录
+// fn get_app_directories() -> Vec<PathBuf> {
+//     let mut app_dirs = Vec::new();
+    
+//     // 根据操作系统添加不同的应用目录
+//     #[cfg(target_os = "windows")]
+//     {
+//         if let Some(program_files) = env::var_os("ProgramFiles") {
+//             app_dirs.push(PathBuf::from(program_files));
+//         }
+//         if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+//             app_dirs.push(PathBuf::from(program_files_x86));
+//         }
+//     }
+    
+//     app_dirs
+// }
+
+// // 辅助函数: 检查文件是否是可执行文件
+// fn is_executable(path: &std::path::Path) -> bool {
+
+//     #[cfg(windows)]
+//     {
+//         if let Some(extension) = path.extension() {
+//             // 只检查常见的Windows可执行文件扩展名
+//             return extension.eq_ignore_ascii_case("exe") || 
+//                    extension.eq_ignore_ascii_case("lnk"); // 包括快捷方式
+//         }
+//     }
+    
+//     false
+// }
+
+// // 辅助函数: 获取应用图标路径
+// fn get_app_icon(app_path: &str) -> Option<String> {
+    
+//     #[cfg(target_os = "windows")]
+//     {
+//         // 这里可以使用Windows API来从.exe或.lnk文件提取图标
+//         // 但这需要额外的库支持，如winapi
+        
+//         // 简化版本可以直接返回固定图标路径
+//         if app_path.to_lowercase().ends_with(".lnk") {
+//             return Some("/windows-shortcut-icon.svg".to_string());
+//         } else if app_path.to_lowercase().ends_with(".exe") {
+//             return Some("/windows-app-icon.svg".to_string());
+//         }
+//     }
+    
+//     // 使用默认图标
+//     None
+// }
 
 // 搜索应用的命令
 #[tauri::command]
 fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
-    let matcher = SkimMatcherV2::default();
-    // 修改 results 的类型，存储 (综合得分, AppResult)
+    // 使用推荐的Windows应用搜索函数
+    let windows_apps = search_windows_apps(query);
+    
+    // 将结果转换为AppResult格式
     let mut results: Vec<(i64, AppResult)> = Vec::new();
-
-    // 获取系统应用目录
-    let app_paths = get_app_directories();
     
-    println!("Searching for apps with query: {}", query);
-    println!("Scanning directories: {:?}", app_paths);
-
-    for app_dir in app_paths {
-        println!("Scanning directory: {:?}", app_dir);
+    for app in windows_apps {
+        // 获取该应用的启动频率
+        let frequency = {
+            let tracker_guard = app_tracker.0.lock().unwrap();
+            *tracker_guard.get(&app.path).unwrap_or(&0)
+        };
         
-        // 遍历应用目录中的可执行文件
-        for entry in WalkDir::new(app_dir)
-            .follow_links(true)
-            .max_depth(5) // 限制搜索深度
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| is_executable(e.path()))
-        {
-            let path = entry.path().to_string_lossy().to_string();
-            
-            // 使用文件名作为应用名称，去掉扩展名
-            let file_name = entry.path().file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown App");
-                
-            // 处理.lnk快捷方式的情况，尝试获取目标应用名称
-            let display_name = if path.to_lowercase().ends_with(".lnk") {
-                // 从.lnk文件名移除可能的" - 快捷方式"后缀
-                file_name.replace(" - 快捷方式", "")
-            } else {
-                file_name.to_string()
-            };
-
-            // 使用模糊匹配来搜索
-            if let Some(score) = matcher.fuzzy_match(&display_name, query) {
-                // 获取该应用的启动频率
-                let frequency = {
-                    // 在需要时获取锁
-                    let tracker_guard = app_tracker.0.lock().unwrap();
-                    *tracker_guard.get(&path).unwrap_or(&0) // 如果没有记录，频率视为 0
-                }; // 锁在这里释放
-
-                // --- 计算综合得分 ---
-                const FREQUENCY_WEIGHT: i64 = 10; 
-                let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
-
-                println!("Found app: {} at {}", display_name, path);
-
-                results.push((combined_score, AppResult {
-                    result_type: "app".to_string(),
-                    title: display_name,
-                    path: path.clone(),
-                    icon_path: get_app_icon(&path),
-                }));
-            }
-        }
+        const FREQUENCY_WEIGHT: i64 = 10;
+        let score = if app.is_shortcut { 100 } else { 50 }; // 快捷方式优先显示
+        let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
+        
+        results.push((combined_score, AppResult {
+            result_type: "app".to_string(),
+            title: app.name,
+            path: app.path,
+            icon_path: app.icon_path,
+        }));
     }
-
-    // 按 *综合得分* 降序排序
-    results.sort_by(|a, b| b.0.cmp(&a.0));
-
-    // 只返回匹配的应用，不包括分数
-    let filtered_results: Vec<AppResult> = results.into_iter()
-        .map(|(_, app)| app) // 提取 AppResult
-        .take(10) // 只返回前10个结果
-        .collect();
-        
-    println!("Found {} matching applications", filtered_results.len());
     
-    filtered_results
+    // 按综合得分降序排序
+    results.sort_by(|a, b| b.0.cmp(&a.0));
+    
+    // 只返回匹配的应用，不包括分数
+    results.into_iter()
+        .map(|(_, app)| app)
+        .take(10)
+        .collect()
+}
+
+// 获取常用应用
+#[tauri::command]
+fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
+    let tracker = app_tracker.0.lock().unwrap();
+    
+    // 将HashMap转换为Vec并按使用频率排序
+    let mut apps: Vec<(String, u32)> = tracker.clone().into_iter().collect();
+    apps.sort_by(|a, b| b.1.cmp(&a.1));
+    
+    // 将排序后的路径转换为AppResult
+    apps.into_iter()
+        .take(6) // 返回前6个常用应用
+        .map(|(path, _)| {
+            let file_name = PathBuf::from(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown App")
+                .to_string();
+            
+            AppResult {
+                result_type: "app".to_string(),
+                title: file_name,
+                path,
+                icon_path: None,
+            }
+        })
+        .collect()
 }
 
 // 启动应用的命令
@@ -147,35 +417,6 @@ fn search_web(query: &str) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("执行网络搜索失败: {}", e))
     }
-}
-
-// 获取常用应用
-#[tauri::command]
-fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
-    let tracker = app_tracker.0.lock().unwrap();
-    
-    // 将HashMap转换为Vec并按使用频率排序
-    let mut apps: Vec<(String, u32)> = tracker.clone().into_iter().collect();
-    apps.sort_by(|a, b| b.1.cmp(&a.1));
-    
-    // 将排序后的路径转换为AppResult
-    apps.into_iter()
-        .take(6) // 返回前6个常用应用
-        .map(|(path, _)| {
-            let file_name = PathBuf::from(&path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown App")
-                .to_string();
-            
-            AppResult {
-                result_type: "app".to_string(),
-                title: file_name,
-                path,
-                icon_path: None,
-            }
-        })
-        .collect()
 }
 
 // 设置全局热键的处理函数
@@ -228,101 +469,6 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
     Ok(())
 }
 
-// 辅助函数: 获取应用目录
-fn get_app_directories() -> Vec<PathBuf> {
-    let mut app_dirs = Vec::new();
-    
-    // 根据操作系统添加不同的应用目录
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            app_dirs.push(PathBuf::from(program_files));
-        }
-        if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
-            app_dirs.push(PathBuf::from(program_files_x86));
-        }
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        app_dirs.push(PathBuf::from("/Applications"));
-        
-        // 也可以添加用户应用目录
-        if let Some(home) = dirs::home_dir() {
-            app_dirs.push(home.join("Applications"));
-        }
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        app_dirs.push(PathBuf::from("/usr/bin"));
-        app_dirs.push(PathBuf::from("/usr/local/bin"));
-        
-        // 添加用户可执行文件目录
-        if let Some(home) = dirs::home_dir() {
-            app_dirs.push(home.join(".local/bin"));
-        }
-    }
-    
-    app_dirs
-}
-
-// 辅助函数: 检查文件是否是可执行文件
-fn is_executable(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = std::fs::metadata(path) {
-            return metadata.permissions().mode() & 0o111 != 0;
-        }
-    }
-    
-    #[cfg(windows)]
-    {
-        if let Some(extension) = path.extension() {
-            // 只检查常见的Windows可执行文件扩展名
-            return extension.eq_ignore_ascii_case("exe") || 
-                   extension.eq_ignore_ascii_case("lnk"); // 包括快捷方式
-        }
-    }
-    
-    false
-}
-
-// 辅助函数: 获取应用图标路径
-fn get_app_icon(app_path: &str) -> Option<String> {
-    // 这个函数实现可能比较复杂，需要根据操作系统使用不同的API
-    // 这里提供一个简化的实现，实际应用中可能需要更复杂的逻辑
-    
-    #[cfg(target_os = "macos")]
-    {
-        // 在macOS上，应用图标通常在.app包内的Resources目录中
-        let path = PathBuf::from(app_path);
-        if path.extension().map_or(false, |ext| ext == "app") {
-            let icon_path = path.join("Contents/Resources/AppIcon.icns");
-            if icon_path.exists() {
-                return icon_path.to_str().map(String::from);
-            }
-        }
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        // 这里可以使用Windows API来从.exe或.lnk文件提取图标
-        // 但这需要额外的库支持，如winapi
-        
-        // 简化版本可以直接返回固定图标路径
-        if app_path.to_lowercase().ends_with(".lnk") {
-            return Some("/windows-shortcut-icon.svg".to_string());
-        } else if app_path.to_lowercase().ends_with(".exe") {
-            return Some("/windows-app-icon.svg".to_string());
-        }
-    }
-    
-    // 使用默认图标
-    None
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -345,12 +491,11 @@ pub fn run() {
         .manage(AppFrequencyTracker(Mutex::new(HashMap::new())))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
-            search_apps, // 使用修改后的 search_apps
+            search_apps,
+            get_frequent_apps,
             launch_app,
             open_url,
-            search_web,
-            get_frequent_apps
+            search_web
         ])
         .run(tauri::generate_context!())
         .expect("运行Tauri应用程序时出错");
