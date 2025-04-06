@@ -44,47 +44,57 @@ fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<
 
     // 获取系统应用目录
     let app_paths = get_app_directories();
-
-    // 提前获取 tracker 的锁，避免在循环内频繁加锁/解锁 (虽然在这个场景下影响可能不大)
-    // 但更常见的做法是在需要时获取
-    // let tracker_guard = app_tracker.0.lock().unwrap(); // 或者在循环内获取
+    
+    println!("Searching for apps with query: {}", query);
+    println!("Scanning directories: {:?}", app_paths);
 
     for app_dir in app_paths {
+        println!("Scanning directory: {:?}", app_dir);
+        
         // 遍历应用目录中的可执行文件
         for entry in WalkDir::new(app_dir)
             .follow_links(true)
+            .max_depth(5) // 限制搜索深度
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| is_executable(e.path()))
         {
             let path = entry.path().to_string_lossy().to_string();
+            
+            // 使用文件名作为应用名称，去掉扩展名
             let file_name = entry.path().file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Unknown App");
+                
+            // 处理.lnk快捷方式的情况，尝试获取目标应用名称
+            let display_name = if path.to_lowercase().ends_with(".lnk") {
+                // 从.lnk文件名移除可能的" - 快捷方式"后缀
+                file_name.replace(" - 快捷方式", "")
+            } else {
+                file_name.to_string()
+            };
 
             // 使用模糊匹配来搜索
-            if let Some(score) = matcher.fuzzy_match(file_name, query) {
+            if let Some(score) = matcher.fuzzy_match(&display_name, query) {
                 // 获取该应用的启动频率
                 let frequency = {
                     // 在需要时获取锁
                     let tracker_guard = app_tracker.0.lock().unwrap();
-                    // 使用 path 作为 key，因为 launch_app 中也是用 path
                     *tracker_guard.get(&path).unwrap_or(&0) // 如果没有记录，频率视为 0
                 }; // 锁在这里释放
 
                 // --- 计算综合得分 ---
-                // 简单策略：模糊匹配分 + 频率 * 权重因子
-                // 权重因子可以调整，用来控制频率对排序的影响程度
-                // 将 u32 频率转换为 i64 以便和 score 相加
-                const FREQUENCY_WEIGHT: i64 = 10; // 示例权重，可以调整
+                const FREQUENCY_WEIGHT: i64 = 10; 
                 let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
 
                 results.push((combined_score, AppResult {
                     result_type: "app".to_string(),
-                    title: file_name.to_string(),
-                    path: path.clone(), // path 仍然存储，用于启动和获取图标
+                    title: display_name,
+                    path: path.clone(),
                     icon_path: get_app_icon(&path),
                 }));
+                
+                println!("Found app: {} at {}", display_name, path);
             }
         }
     }
@@ -93,10 +103,14 @@ fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<
     results.sort_by(|a, b| b.0.cmp(&a.0));
 
     // 只返回匹配的应用，不包括分数
-    results.into_iter()
+    let filtered_results = results.into_iter()
         .map(|(_, app)| app) // 提取 AppResult
         .take(10) // 只返回前10个结果
-        .collect()
+        .collect();
+        
+    println!("Found {} matching applications", filtered_results.len());
+    
+    filtered_results
 }
 
 // 启动应用的命令
@@ -266,7 +280,9 @@ fn is_executable(path: &std::path::Path) -> bool {
     #[cfg(windows)]
     {
         if let Some(extension) = path.extension() {
-            return extension == "exe" || extension == "bat" || extension == "cmd";
+            // 只检查常见的Windows可执行文件扩展名
+            return extension.eq_ignore_ascii_case("exe") || 
+                   extension.eq_ignore_ascii_case("lnk"); // 包括快捷方式
         }
     }
     
@@ -292,8 +308,15 @@ fn get_app_icon(app_path: &str) -> Option<String> {
     
     #[cfg(target_os = "windows")]
     {
-        // 在Windows上，可以从.exe文件中提取图标
-        // 但这需要额外的Windows API调用，这里省略
+        // 这里可以使用Windows API来从.exe或.lnk文件提取图标
+        // 但这需要额外的库支持，如winapi
+        
+        // 简化版本可以直接返回固定图标路径
+        if app_path.to_lowercase().ends_with(".lnk") {
+            return Some("/windows-shortcut-icon.svg".to_string());
+        } else if app_path.to_lowercase().ends_with(".exe") {
+            return Some("/windows-app-icon.svg".to_string());
+        }
     }
     
     // 使用默认图标
