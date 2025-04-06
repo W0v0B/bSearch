@@ -3,7 +3,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::env;
 use std::fs::File;
-use std::io::Write;
 use std::sync::Once;
 use std::sync::Mutex;
 use std::ptr::null_mut;
@@ -16,10 +15,11 @@ use winreg::enums::*;
 use winreg::{HKEY, RegKey};
 
 use windows::core::{Interface, PCWSTR};
-use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-use windows::Win32::UI::Shell::{IShellLinkW, IExtractIconW, ShellLink};
+use windows::Win32::Foundation::COLORREF;
+use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitialize, CLSCTX_INPROC_SERVER};
 
+use image::ImageOutputFormat;
 use fuzzy_matcher::FuzzyMatcher;
 use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{Code, HotKey, Modifiers}};
 use tauri::{Manager, Runtime, State, Emitter, AppHandle};
@@ -272,20 +272,14 @@ fn extract_icon_from_exe(exe_path: &str) -> Option<String> {
     
     let icon_path = cache_dir.join(format!("icon_{}.png", icon_id));
     
-    // 如果图标已经存在，直接返回路径
-    if icon_path.exists() {
-        return Some(icon_path.to_string_lossy().to_string());
-    }
-    
     unsafe {
         // 初始化COM
         let _ = CoInitialize(None);
         
-        // 尝试使用Shell32的ExtractIconEx函数提取图标
-        // 这里使用简单的windows-rs API调用，实际项目中可能需要更复杂的处理
+        // 创建宽字符路径
         let wide_path: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
         
-        // 转换为适当的类型
+        // 尝试提取图标
         let hicon = windows::Win32::UI::Shell::ExtractIconW(
             Some(windows::Win32::Foundation::HINSTANCE(null_mut())),
             PCWSTR(wide_path.as_ptr()),
@@ -293,22 +287,166 @@ fn extract_icon_from_exe(exe_path: &str) -> Option<String> {
         );
         
         if !hicon.is_invalid() {
-            // 将图标保存为PNG
-            // 这里需要一个更复杂的函数来将HICON转换为PNG
-            // 简化示例中省略了实际的图标保存代码
+            // 获取DC和兼容DC
+            let hdc = windows::Win32::Graphics::Gdi::GetDC(None);
+            if hdc.is_invalid() {
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                return None;
+            }
             
-            // 实际项目中，可以使用crates如image或ico来处理图标转换
-            // 以下是一个占位实现
-            let _ = File::create(&icon_path).ok()?;
+            let hdc_mem = windows::Win32::Graphics::Gdi::CreateCompatibleDC(Some(hdc));
+            if hdc_mem.is_invalid() {
+                let _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, hdc);
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                return None;
+            }
             
-            // 释放图标句柄
+            // 创建48x48位图
+            let hbmp = windows::Win32::Graphics::Gdi::CreateCompatibleBitmap(hdc, 48, 48);
+            if hbmp.is_invalid() {
+                let _ = windows::Win32::Graphics::Gdi::DeleteDC(hdc_mem);
+                let _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, hdc);
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
+                return None;
+            }
+            
+            // 选择位图到内存DC
+            let old_obj = windows::Win32::Graphics::Gdi::SelectObject(hdc_mem, hbmp.into());
+            
+            // 设置背景色为透明
+            let _ = windows::Win32::Graphics::Gdi::SetBkColor(hdc_mem, COLORREF(0x00FFFFFF));
+            let _ = windows::Win32::Graphics::Gdi::SetBkMode(hdc_mem, windows::Win32::Graphics::Gdi::TRANSPARENT);
+            
+            // 绘制图标
+            let _ = windows::Win32::UI::WindowsAndMessaging::DrawIconEx(
+                hdc_mem,
+                0, 0,
+                hicon,
+                48, 48,
+                0,
+                None,
+                windows::Win32::UI::WindowsAndMessaging::DI_NORMAL
+            );
+            
+            // 创建位图文件
+            let result = save_bitmap_as_png(hbmp, &icon_path);
+            
+            // 清理资源
+            let _ = windows::Win32::Graphics::Gdi::SelectObject(hdc_mem, old_obj);
+            let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbmp.into());
+            let _ = windows::Win32::Graphics::Gdi::DeleteDC(hdc_mem);
+            let _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, hdc);
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
             
-            return Some(icon_path.to_string_lossy().to_string());
+            if result {
+                return Some(icon_path.to_string_lossy().to_string());
+            }
         }
     }
     
-    None
+    // 如果提取失败，返回默认图标路径
+    let default_icon_path = cache_dir.join("default_icon.png");
+    
+    // 如果默认图标不存在，创建一个简单的默认图标
+    if !default_icon_path.exists() {
+        create_default_icon(&default_icon_path);
+    }
+    
+    if default_icon_path.exists() {
+        Some(default_icon_path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+// 将位图保存为PNG文件
+fn save_bitmap_as_png(hbmp: windows::Win32::Graphics::Gdi::HBITMAP, path: &Path) -> bool {
+    unsafe {
+        // 获取位图信息
+        let mut bmi: windows::Win32::Graphics::Gdi::BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = 48;
+        bmi.bmiHeader.biHeight = -48; // 负值表示自上而下的DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32; // 32位RGBA
+        bmi.bmiHeader.biCompression = windows::Win32::Graphics::Gdi::BI_RGB.0;
+        
+        // 分配内存存储像素数据
+        let data_size = 48 * 48 * 4;
+        let mut buffer = vec![0u8; data_size];
+        
+        // 获取位图数据
+        let dc = windows::Win32::Graphics::Gdi::GetDC(None);
+        let result = windows::Win32::Graphics::Gdi::GetDIBits(
+            dc,
+            hbmp,
+            0,
+            48,
+            Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+            &mut bmi,
+            windows::Win32::Graphics::Gdi::DIB_RGB_COLORS
+        );
+        let _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, dc);
+        
+        if result == 0 {
+            return false;
+        }
+        
+        // 创建PNG文件
+        let file = match File::create(path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let writer = std::io::BufWriter::new(file);
+        
+        // 使用image crate将RGBA数据保存为PNG
+        // 注意：需要添加image crate作为依赖
+        use image::{ImageBuffer, Rgba};
+        
+        let mut img = ImageBuffer::<Rgba<u8>, _>::new(48, 48);
+        
+        // BGRA到RGBA转换
+        for y in 0..48 {
+            for x in 0..48 {
+                let i = (y * 48 + x) * 4;
+                let b = buffer[i];
+                let g = buffer[i + 1];
+                let r = buffer[i + 2];
+                let a = buffer[i + 3];
+                
+                img.put_pixel(x as u32, y as u32, Rgba([r, g, b, a]));
+            }
+        }
+        
+        img.write_to(&mut writer.into_inner().unwrap(), ImageOutputFormat::Png).is_ok()
+    }
+}
+
+// 创建默认图标
+fn create_default_icon(path: &Path) -> bool {
+    use image::{ImageBuffer, Rgba};
+    
+    // 创建一个48x48的简单图标
+    let mut img = ImageBuffer::<Rgba<u8>, _>::new(48, 48);
+    
+    // 绘制一个简单的应用图标
+    for y in 0..48 {
+        for x in 0..48 {
+            let dx = x as i32 - 24;
+            let dy = y as i32 - 24;
+            let color = if dx * dx + dy * dy < 20 * 20 {
+                Rgba([100, 149, 237, 255]) // 淡蓝色
+            } else {
+                Rgba([0, 0, 0, 0])
+            };
+    
+            img.put_pixel(x, y, color);
+        }
+    }
+    
+    
+    // 保存图像
+    img.save(path).is_ok()
 }
 
 // 搜索应用的函数
