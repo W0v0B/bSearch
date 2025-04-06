@@ -247,7 +247,7 @@ async function performSearch(): Promise<void> {
         type: 'web',
         title: `搜索 "${searchTerm.value}" - Bing`,
         url: `https://www.bing.com/search?q=${encodeURIComponent(searchTerm.value)}`,
-        iconPath: '/bing-icon.svg'
+        iconPath: '/edge-icon.svg'
       }
     ];
     
@@ -330,9 +330,19 @@ async function executeResult(result: any): Promise<void> {
  * 2. 添加到最近搜索记录
  * 3. 隐藏搜索界面
  */
-async function searchWeb(query: string): Promise<void> {
+ async function searchWeb(query: string, browser: string = 'google'): Promise<void> {
   try {
-    await invoke('search_web', { query });
+    let searchUrl;
+    
+    // 根据浏览器类型构建URL
+    if (browser.toLowerCase() === 'edge') {
+      searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+    } else {
+      // 默认使用 Google
+      searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    }
+    
+    await invoke('open_url', { url: searchUrl });
     addToRecentSearches(query);
     hideSearch();
   } catch (error) {
