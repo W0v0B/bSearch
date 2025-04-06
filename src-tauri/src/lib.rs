@@ -87,14 +87,14 @@ fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<
                 const FREQUENCY_WEIGHT: i64 = 10; 
                 let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
 
+                println!("Found app: {} at {}", display_name, path);
+
                 results.push((combined_score, AppResult {
                     result_type: "app".to_string(),
                     title: display_name,
                     path: path.clone(),
                     icon_path: get_app_icon(&path),
                 }));
-                
-                println!("Found app: {} at {}", display_name, path);
             }
         }
     }
@@ -103,7 +103,7 @@ fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<
     results.sort_by(|a, b| b.0.cmp(&a.0));
 
     // 只返回匹配的应用，不包括分数
-    let filtered_results = results.into_iter()
+    let filtered_results: Vec<AppResult> = results.into_iter()
         .map(|(_, app)| app) // 提取 AppResult
         .take(10) // 只返回前10个结果
         .collect();
