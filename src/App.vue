@@ -59,7 +59,7 @@
               @mouseenter="selectedIndex = getAbsoluteIndex(index, 'app')"
             >
               <div class="result-icon">
-                <img :src="result.iconPath || '/app-icon-placeholder.svg'" :alt="result.title">
+                <img :src="result.icon_path || '/app-icon-placeholder.svg'" :alt="result.title">
               </div>
               <div class="result-details">
                 <div class="result-title">{{ result.title }}</div>
@@ -81,7 +81,7 @@
               @mouseenter="selectedIndex = getAbsoluteIndex(index, 'web')"
             >
               <div class="result-icon">
-                <img :src="result.iconPath || '/web-icon-placeholder.svg'" :alt="result.title">
+                <img :src="result.icon_path || '/web-icon-placeholder.svg'" :alt="result.title">
               </div>
               <div class="result-details">
                 <div class="result-title">{{ result.title }}</div>
@@ -152,7 +152,7 @@
                 @click="executeResult(app)"
               >
                 <div class="frequent-app-icon">
-                  <img :src="app.iconPath || '/app-icon-placeholder.svg'" :alt="app.title">
+                  <img :src="app.icon_path || '/app-icon-placeholder.svg'" :alt="app.title">
                 </div>
                 <div class="frequent-app-name">{{ app.title }}</div>
               </div>
@@ -234,6 +234,21 @@ async function performSearch(): Promise<void> {
     const apps = await invoke('search_apps', { 
       query: searchTerm.value.trim() 
     }) as any[];
+    console.log('Received app:', apps);
+
+    const appsWithIcons = await Promise.all(apps.map(async (app) => {
+      try {
+        if (app.icon_path) {
+          // 获取图标数据
+          const iconData = await invoke('get_icon_data', { path: app.icon_path });
+          return { ...app, icon_path: iconData };
+        }
+        return app;
+      } catch (e) {
+        console.error('Failed to load icon:', e);
+        return app;
+      }
+    }));
     
     // 模拟网络搜索结果
     const webSearchResults = [
@@ -241,18 +256,18 @@ async function performSearch(): Promise<void> {
         type: 'web',
         title: `搜索 "${searchTerm.value}" - Google`,
         url: `https://www.google.com/search?q=${encodeURIComponent(searchTerm.value)}`,
-        iconPath: '/google-icon.svg'
+        icon_path: '/google-icon.svg'
       },
       {
         type: 'web',
         title: `搜索 "${searchTerm.value}" - Bing`,
         url: `https://www.bing.com/search?q=${encodeURIComponent(searchTerm.value)}`,
-        iconPath: '/edge-icon.svg'
+        icon_path: '/edge-icon.svg'
       }
     ];
     
     // 合并结果
-    results.value = [...apps, ...webSearchResults];
+    results.value = [...appsWithIcons, ...webSearchResults];
     selectedIndex.value = 0;
   } catch (error) {
     console.error('搜索失败:', error);

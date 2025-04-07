@@ -1,6 +1,7 @@
 // src-tauri/src/lib.rs
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::fs;
 use std::env;
 use std::fs::File;
 use std::sync::Once;
@@ -25,6 +26,7 @@ use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, hotkey::{Code, HotKe
 use tauri::{Manager, Runtime, State, Emitter, AppHandle};
 use walkdir::WalkDir;
 use serde::{Serialize, Deserialize};
+use base64::{engine::general_purpose, Engine as _};
 
 // 添加这个静态变量来生成唯一的图标ID
 static ICON_ID: AtomicU64 = AtomicU64::new(1);
@@ -449,6 +451,20 @@ fn create_default_icon(path: &Path) -> bool {
     img.save(path).is_ok()
 }
 
+#[tauri::command]
+async fn get_icon_data(path: String) -> Result<String, String> {
+    match fs::read(&path) {
+        Ok(data) => {
+            let base64 = general_purpose::STANDARD.encode(&data);
+            let mime = mime_guess::from_path(&path)
+                .first_or_octet_stream()
+                .to_string();
+            Ok(format!("data:{};base64,{}", mime, base64))
+        },
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // 搜索应用的函数
 // 修改 search_windows_apps 函数，在返回结果前提取图标
 pub fn search_windows_apps(query: &str) -> Vec<AppInfo> {
@@ -680,6 +696,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             search_apps,
             get_frequent_apps,
+            get_icon_data,
             launch_app,
             open_url,
             search_web
