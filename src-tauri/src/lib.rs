@@ -1,15 +1,14 @@
 // src-tauri/src/lib.rs
-
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::fs;
 use std::env;
 use std::fs::File;
-use std::sync::Once;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::ptr::null_mut;
 use std::process::Command;
+use std::sync::{Once, Mutex};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use winreg::enums::*;
@@ -42,6 +41,13 @@ pub struct AppInfo {
     path: String,
     icon_path: Option<String>,
     is_shortcut: bool,
+}
+
+// 应用缓存结构
+struct AppCache {
+    apps: Arc<Mutex<Vec<AppInfo>>>,
+    last_update: Arc<Mutex<std::time::Instant>>,
+    is_updating: Arc<AtomicBool>,
 }
 
 // 定义搜索结果类型
@@ -518,40 +524,33 @@ pub fn search_windows_apps(query: &str) -> Vec<AppInfo> {
 
 // 搜索应用的命令
 #[tauri::command]
-fn search_apps(query: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
-    // 使用推荐的Windows应用搜索函数
-    let windows_apps = search_windows_apps(query);
+fn search_apps(query: &str, app_cache: State<'_, AppCache>, app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
+    // 如果需要，在后台更新缓存
+    app_cache.update_if_needed();
     
-    // 将结果转换为AppResult格式
-    let mut results: Vec<(i64, AppResult)> = Vec::new();
+    // 使用缓存的应用列表
+    let all_apps = app_cache.get_apps();
     
-    for app in windows_apps {
-        // 获取该应用的启动频率
-        let frequency = {
-            let tracker_guard = app_tracker.0.lock().unwrap();
-            *tracker_guard.get(&app.path).unwrap_or(&0)
-        };
-        
-        const FREQUENCY_WEIGHT: i64 = 10;
-        let score = if app.is_shortcut { 100 } else { 50 }; // 快捷方式优先显示
-        let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
-        
-        results.push((combined_score, AppResult {
-            result_type: "app".to_string(),
-            title: app.name,
-            path: app.path,
-            icon_path: app.icon_path,
-        }));
+    // 如果没有查询字符串，返回所有应用
+    if query.is_empty() {
+        return convert_to_results(&all_apps, &app_tracker);
     }
     
-    // 按综合得分降序排序
-    results.sort_by(|a, b| b.0.cmp(&a.0));
+    // 按名称进行模糊匹配
+    let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+    let mut matched_apps: Vec<(i64, &AppInfo)> = Vec::new();
+    
+    for app in &all_apps {
+        if let Some(score) = matcher.fuzzy_match(&app.name.to_lowercase(), &query.to_lowercase()) {
+            matched_apps.push((score, app));
+        }
+    }
+    
+    // 按匹配分数排序
+    matched_apps.sort_by(|a, b| b.0.cmp(&a.0));
     
     // 只返回匹配的应用，不包括分数
-    results.into_iter()
-        .map(|(_, app)| app)
-        .take(10)
-        .collect()
+    convert_to_results(&matched_apps.into_iter().map(|(_, app)| app.clone()).collect::<Vec<_>>(), &app_tracker)
 }
 
 // 获取常用应用
@@ -586,6 +585,128 @@ fn get_frequent_apps(app_tracker: State<'_, AppFrequencyTracker>) -> Vec<AppResu
         .collect()
 }
 
+impl AppCache {
+    fn new() -> Self {
+        let cache = Self {
+            apps: Arc::new(Mutex::new(Vec::new())),
+            last_update: Arc::new(Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(600))),
+            is_updating: Arc::new(AtomicBool::new(false)),
+        };
+        
+        // 立即触发后台更新
+        cache.update_if_needed();
+        
+        cache
+    }
+    
+    fn get_apps(&self) -> Vec<AppInfo> {
+        let apps = self.apps.lock().unwrap().clone();
+        
+        // 如果缓存为空且不在更新中，则进行同步初始化
+        if apps.is_empty() && !self.is_updating.load(Ordering::SeqCst) {
+            println!("Cache is Null!! Start Init...");
+            let fresh_apps = search_windows_apps(""); // 使用原来的函数确保兼容性
+            let mut cache_apps = self.apps.lock().unwrap();
+            *cache_apps = fresh_apps;
+            return cache_apps.clone();
+        }
+        
+        apps
+    }
+    
+    fn update_if_needed(&self) {
+        let now = std::time::Instant::now();
+        let update_needed = {
+            let last = self.last_update.lock().unwrap();
+            now.duration_since(*last).as_secs() > 300 // 5分钟更新一次
+        };
+        
+        if update_needed && !self.is_updating.load(Ordering::SeqCst) {
+            self.is_updating.store(true, Ordering::SeqCst);
+            
+            // 克隆Arc指针以便在新线程中安全使用
+            let apps_clone = Arc::clone(&self.apps);
+            let last_update_clone = Arc::clone(&self.last_update);
+            let is_updating_clone = Arc::clone(&self.is_updating);
+            
+            std::thread::spawn(move || {
+                println!("Updating Cache...");
+                let start_time = std::time::Instant::now();
+                
+                let apps = collect_all_apps();
+                
+                {
+                    let mut cache_apps = apps_clone.lock().unwrap();
+                    *cache_apps = apps;
+                    
+                    let mut last_update = last_update_clone.lock().unwrap();
+                    *last_update = std::time::Instant::now();
+                }
+                
+                is_updating_clone.store(false, Ordering::SeqCst);
+                println!("Updated Cache Success!! Consume time: {:?}", start_time.elapsed());
+            });
+        }
+    }
+}
+
+// 将AppInfo转换为AppResult并考虑使用频率
+fn convert_to_results(apps: &[AppInfo], app_tracker: &State<'_, AppFrequencyTracker>) -> Vec<AppResult> {
+    let mut results: Vec<(i64, AppResult)> = Vec::new();
+    
+    for app in apps {
+        // 获取该应用的启动频率
+        let frequency = {
+            let tracker_guard = app_tracker.0.lock().unwrap();
+            *tracker_guard.get(&app.path).unwrap_or(&0)
+        };
+        
+        const FREQUENCY_WEIGHT: i64 = 10;
+        let score = if app.is_shortcut { 100 } else { 50 }; // 快捷方式优先显示
+        let combined_score = score + (frequency as i64 * FREQUENCY_WEIGHT);
+        
+        results.push((combined_score, AppResult {
+            result_type: "app".to_string(),
+            title: app.name.clone(),
+            path: app.path.clone(),
+            icon_path: app.icon_path.clone(),
+        }));
+    }
+    
+    // 按综合得分降序排序
+    results.sort_by(|a, b| b.0.cmp(&a.0));
+    
+    // 只返回匹配的应用，不包括分数
+    results.into_iter()
+        .map(|(_, app)| app)
+        .take(10)
+        .collect()
+}
+
+// 收集所有应用的函数
+fn collect_all_apps() -> Vec<AppInfo> {
+    use rayon::prelude::*;
+    
+    let mut all_apps = Vec::new();
+    
+    // 并行获取特殊文件夹中的快捷方式
+    let shortcuts = get_shortcuts_from_special_folders();
+    all_apps.extend(shortcuts);
+    
+    // 并行获取注册表中的应用
+    let registry_apps = get_installed_apps_from_registry();
+    all_apps.extend(registry_apps);
+    
+    // 并行提取图标
+    all_apps.par_iter_mut().for_each(|app| {
+        if app.icon_path.is_none() {
+            app.icon_path = extract_icon_from_exe(&app.path);
+        }
+    });
+    
+    all_apps
+}
+
 // 启动应用的命令
 #[tauri::command]
 fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Result<(), String> {
@@ -598,7 +719,7 @@ fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Re
     // 启动应用
     match Command::new(app_path).spawn() {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("启动应用失败: {}", e))
+        Err(e) => Err(format!("Open App Failed: {}", e))
     }
 }
 
@@ -607,7 +728,7 @@ fn launch_app(app_path: &str, app_tracker: State<'_, AppFrequencyTracker>) -> Re
 async fn open_url(url: &str) -> Result<(), String> {
     match tauri_plugin_opener::open_url(url, Option::<&str>::None) {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("打开URL失败: {}", e))
+        Err(e) => Err(format!("Open URL Failed: {}", e))
     }
 }
 
@@ -618,7 +739,7 @@ fn search_web(query: &str) -> Result<(), String> {
     
     match open::that(&search_url) {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("执行网络搜索失败: {}", e))
+        Err(e) => Err(format!("Failed to perform a web search: {}", e))
     }
 }
 
@@ -678,7 +799,7 @@ pub fn run() {
         .setup(|app| {
             // 设置全局热键
             if let Err(e) = setup_global_hotkeys(app) {
-                eprintln!("设置全局热键失败: {}", e);
+                eprintln!("Failed to set global hotkey: {}", e);
             }
 
             // 创建并显示主窗口
@@ -692,6 +813,7 @@ pub fn run() {
         })
         // 确保 AppFrequencyTracker 被正确管理
         .manage(AppFrequencyTracker(Mutex::new(HashMap::new())))
+        .manage(AppCache::new())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             search_apps,
@@ -702,5 +824,5 @@ pub fn run() {
             search_web
         ])
         .run(tauri::generate_context!())
-        .expect("运行Tauri应用程序时出错");
+        .expect("Runing Tauri App Error!!");
 }

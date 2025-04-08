@@ -360,6 +360,7 @@ dependencies = [
  "image",
  "mime_guess",
  "open",
+ "rayon",
  "serde",
  "serde_json",
  "tauri",
