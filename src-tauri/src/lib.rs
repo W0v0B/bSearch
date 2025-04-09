@@ -814,9 +814,6 @@ pub fn run() {
             let main_window = app.get_webview_window("main").unwrap();
             main_window.set_title("BSearch").unwrap();
 
-            // 初始设置窗口隐藏，直到触发热键
-            main_window.hide().unwrap();
-
             Ok(())
         })
         // 确保 AppFrequencyTracker 被正确管理
