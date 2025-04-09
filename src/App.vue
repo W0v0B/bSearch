@@ -408,10 +408,16 @@ async function showSearch() {
 }
 
 // 隐藏搜索界面
-function hideSearch() {
+async function hideSearch() {
   isVisible.value = false;
   searchTerm.value = '';
   results.value = [];
+  try {
+    await invoke('hide_main_window');
+    console.log('Window hidden via hideSearch');
+  } catch (error) {
+    console.error("Failed to hide window:", error);
+  }
 }
 
 // 加载常用应用

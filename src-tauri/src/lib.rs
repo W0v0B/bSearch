@@ -793,6 +793,14 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tauri::command]
+async fn hide_main_window(window: tauri::Window) -> Result<(), String> {
+    // 使用传递进来的 window 对象直接隐藏
+    window.hide().map_err(|e| e.to_string())?;
+    println!("Window hidden via backend command."); // 可选的日志
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -821,7 +829,8 @@ pub fn run() {
             get_icon_data,
             launch_app,
             open_url,
-            search_web
+            search_web,
+            hide_main_window
         ])
         .run(tauri::generate_context!())
         .expect("Runing Tauri App Error!!");
