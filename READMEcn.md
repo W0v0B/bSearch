@@ -24,3 +24,7 @@ bsearch 是一个为 Windows 设计的快速应用程序启动器和简单的网
 * **Windows**:
     * WebView2 Runtime (通常随新版 Windows 自带，如没有需安装)。
     * Microsoft Visual Studio C++ Build Tools (选择 "Desktop development with C++" 工作负载)。
+
+## 作者留言
+
+我知道里面的代码很乱，基本借助AI完成，但是就先这样吧，激活搜索窗口时每次会闪烁一次，尝试了很多办法都没能解决 emm...

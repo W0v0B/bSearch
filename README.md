@@ -1,5 +1,3 @@
-## README (English Version)
-
 # bsearch - Quick Launcher & Search Tool (Windows)
 
 bsearch is a fast application launcher and simple web search utility for Windows, inspired by macOS Spotlight and Windows PowerToys Run. Activate it with a global hotkey to quickly find and launch applications or perform web searches. This project is built with [Tauri](https://tauri.app/) v2, using Rust for the backend and Vue.js 3 with Vite for the frontend.
@@ -29,3 +27,7 @@ bsearch is a fast application launcher and simple web search utility for Windows
 * **Windows**:
     * WebView2 Runtime (usually included in modern Windows versions, install if missing).
     * Microsoft Visual Studio C++ Build Tools (Select the "Desktop development with C++" workload during installation).
+
+## Author's message
+
+I know the code inside is messy, and it's basically done with the help of AI, but let's do it first, it flashes every time you activate the search window, and you can't solve it after trying a lot of ways to solve emm...
