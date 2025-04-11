@@ -165,28 +165,22 @@
 </template>
 
 <script setup lang="ts">
-// 导入必要的Vue组合式API和Tauri API
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import { invoke } from '@tauri-apps/api/core'; // Tauri核心API，用于与后端通信
-import { Window } from "@tauri-apps/api/window" // Tauri窗口管理API
+import { invoke } from '@tauri-apps/api/core';
+import { Window } from "@tauri-apps/api/window"
 
-// 创建应用窗口实例
 const appWindow = new Window('main');
 
-// 状态管理部分：
-// 控制搜索界面的显示状态
-const isVisible = ref(false); // 是否显示搜索界面
-const searchTerm = ref(''); // 当前搜索词
-const results = ref<any[]>([]); // 搜索结果列表
-const selectedIndex = ref(0); // 当前选中的结果索引
-const isLoading = ref(false); // 加载状态
-const searchInput = ref<HTMLInputElement | null>(null); // 搜索输入框引用
-const searchContainer = ref<HTMLDivElement | null>(null); // 搜索容器引用
-const recentSearches = ref<string[]>([]); // 最近搜索记录
-const frequentApps = ref<any[]>([]); // 常用应用列表
+const isVisible = ref(false);
+const searchTerm = ref('');
+const results = ref<any[]>([]);
+const selectedIndex = ref(0);
+const isLoading = ref(false);
+const searchInput = ref<HTMLInputElement | null>(null);
+const searchContainer = ref<HTMLDivElement | null>(null);
+const recentSearches = ref<string[]>([]);
+const frequentApps = ref<any[]>([]);
 
-// 结果过滤器：
-// 根据类型过滤应用搜索结果
 const appResults = computed(() => {
   return results.value.filter(r => r.type === 'app');
 });
@@ -194,13 +188,6 @@ const webResults = computed(() => {
   return results.value.filter(r => r.type === 'web');
 });
 
-/**
- * 获取绝对索引（用于跨分类选择）
- * 
- * @param index - 当前分类内的索引
- * @param type - 结果类型 ('app' 或 'web')
- * @returns 跨分类的绝对索引
- */
 function getAbsoluteIndex(index: number, type: 'app' | 'web'): number {
   if (type === 'app') {
     return index;
@@ -209,37 +196,22 @@ function getAbsoluteIndex(index: number, type: 'app' | 'web'): number {
   }
 }
 
-/**
- * 执行搜索操作
- * 
- * 处理逻辑：
- * 1. 检查搜索词是否为空
- * 2. 设置加载状态
- * 3. 获取应用搜索结果
- * 4. 生成网络搜索结果
- * 5. 合并结果并重置选中索引
- */
 async function performSearch(): Promise<void> {
-  // 检查搜索词是否为空
   if (!searchTerm.value.trim()) {
     results.value = [];
     return;
   }
   
-  // 设置加载状态
   isLoading.value = true;
   
   try {
-    // 获取应用搜索结果
     const apps = await invoke('search_apps', { 
       query: searchTerm.value.trim() 
     }) as any[];
-    console.log('Received app:', apps);
 
     const appsWithIcons = await Promise.all(apps.map(async (app) => {
       try {
         if (app.icon_path) {
-          // 获取图标数据
           const iconData = await invoke('get_icon_data', { path: app.icon_path });
           return { ...app, icon_path: iconData };
         }
@@ -250,7 +222,6 @@ async function performSearch(): Promise<void> {
       }
     }));
     
-    // 模拟网络搜索结果
     const webSearchResults = [
       {
         type: 'web',
@@ -266,25 +237,15 @@ async function performSearch(): Promise<void> {
       }
     ];
     
-    // 合并结果
     results.value = [...appsWithIcons, ...webSearchResults];
     selectedIndex.value = 0;
   } catch (error) {
-    console.error('搜索失败:', error);
+    console.error('Search Failed:', error);
   } finally {
     isLoading.value = false;
   }
 }
 
-/**
- * 处理键盘导航事件
- * 
- * 支持的按键：
- * - ArrowDown: 向下选择
- * - ArrowUp: 向上选择
- * - Enter: 执行选中结果
- * - Escape: 关闭搜索界面
- */
 function handleKeyDown(event: KeyboardEvent): void {
   switch (event.key) {
     case 'ArrowDown':
@@ -310,14 +271,6 @@ function handleKeyDown(event: KeyboardEvent): void {
   }
 }
 
-/**
- * 执行选中结果
- * 
- * 处理逻辑：
- * 1. 根据结果类型执行不同操作
- * 2. 添加到最近搜索记录
- * 3. 隐藏搜索界面
- */
 async function executeResult(result: any): Promise<void> {
   try {
     switch(result.type) {
@@ -329,31 +282,20 @@ async function executeResult(result: any): Promise<void> {
         break;
     }
     
-    // 成功处理后添加到最近搜索并关闭
     addToRecentSearches(searchTerm.value);
     hideSearch();
   } catch (error) {
-    console.error(`${result.type === 'app' ? '启动应用' : '打开URL'}失败:`, error);
+    console.error(`${result.type === 'app' ? 'Open App' : 'Open URL'}失败:`, error);
   }
 }
 
-/**
- * 执行网络搜索
- * 
- * 处理逻辑：
- * 1. 调用Tauri API执行网络搜索
- * 2. 添加到最近搜索记录
- * 3. 隐藏搜索界面
- */
  async function searchWeb(query: string, browser: string = 'google'): Promise<void> {
   try {
     let searchUrl;
     
-    // 根据浏览器类型构建URL
     if (browser.toLowerCase() === 'edge') {
       searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
     } else {
-      // 默认使用 Google
       searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
     }
     
@@ -361,105 +303,82 @@ async function executeResult(result: any): Promise<void> {
     addToRecentSearches(query);
     hideSearch();
   } catch (error) {
-    console.error('网络搜索失败:', error);
+    console.error('Search Web Failed:', error);
   }
 }
 
-// 清除搜索
 function clearSearch() {
   searchTerm.value = '';
   results.value = [];
   searchInput.value?.focus();
 }
 
-// 设置搜索词
 function setSearch(term: string) {
   searchTerm.value = term;
   performSearch();
 }
 
-// 添加到最近搜索
 function addToRecentSearches(term: string) {
   if (!term.trim()) return;
   
-  // 移除已有的相同搜索词
   recentSearches.value = recentSearches.value.filter(s => s !== term);
   
-  // 添加到最前面
   recentSearches.value.unshift(term);
   
-  // 限制最大数量
   if (recentSearches.value.length > 10) {
     recentSearches.value = recentSearches.value.slice(0, 10);
   }
   
-  // 保存到本地存储
   localStorage.setItem('recentSearches', JSON.stringify(recentSearches.value));
 }
 
-// 显示搜索界面
 async function showSearch() {
   isVisible.value = true;
   await nextTick();
   searchInput.value?.focus();
   
-  // 加载常用应用
   loadFrequentApps();
 }
 
-// 隐藏搜索界面
 async function hideSearch() {
   isVisible.value = false;
   searchTerm.value = '';
   results.value = [];
   try {
     await invoke('hide_main_window');
-    console.log('Window hidden via hideSearch');
   } catch (error) {
     console.error("Failed to hide window:", error);
   }
 }
 
-// 加载常用应用
 async function loadFrequentApps() {
   try {
-    // 1. 从后端获取常用应用列表（包含原始文件路径）
     const appsFromBackend = await invoke('get_frequent_apps') as any[];
 
-    // 2. 异步处理图标路径转换
     const appsWithDataUrls = await Promise.all(appsFromBackend.map(async (app) => {
-      // 如果存在 icon_path 并且它看起来像一个本地路径 (避免处理可能已经是 data URL 的情况)
       if (app.icon_path && !app.icon_path.startsWith('data:')) {
         try {
-          // 调用后端命令获取 Data URL
           const iconDataUrl = await invoke('get_icon_data', { path: app.icon_path });
-          // 返回带有更新后 icon_path 的新应用对象
           return { ...app, icon_path: iconDataUrl };
         } catch (e) {
           console.error(`Failed to load icon data for ${app.title}:`, e);
-          // 如果加载失败，可以返回原对象或设置一个默认图标路径/Data URL
-          return { ...app, icon_path: '/app-icon-placeholder.svg' }; // 或者 null
+          return { ...app, icon_path: '/app-icon-placeholder.svg' };
         }
       }
-      // 如果没有 icon_path 或已经是 data URL，直接返回原对象
       return app;
     }));
 
-    // 3. 将处理后的列表（包含 Data URL）赋值给 ref
     frequentApps.value = appsWithDataUrls;
 
   } catch (error) {
-    console.error('加载常用应用失败:', error);
+    console.error('Load commonly used app list Failed:', error);
     frequentApps.value = [];
   }
 }
 
-// 生命周期钩子
 onMounted(() => {
-  // 监听全局事件
   window.addEventListener('keydown', handleGlobalKeyDown);
   
-  // 从本地存储加载搜索历史
   const savedSearches = localStorage.getItem('recentSearches');
   if (savedSearches) {
     try {
@@ -469,7 +388,6 @@ onMounted(() => {
     }
   }
   
-  // 监听窗口事件
   appWindow.listen('window-shown', () => {
     showSearch();
   });
@@ -483,9 +401,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeyDown);
 });
 
-// 全局按键处理
 function handleGlobalKeyDown(event: KeyboardEvent) {
-  // 处理特殊快捷键
   if (event.shiftKey && event.code === 'Space') {
     event.preventDefault();
     if (isVisible.value) {
@@ -496,7 +412,6 @@ function handleGlobalKeyDown(event: KeyboardEvent) {
   }
 }
 
-// 监听搜索输入变化
 watch(searchTerm, (newVal) => {
   if (newVal.trim()) {
     performSearch();
@@ -507,7 +422,6 @@ watch(searchTerm, (newVal) => {
 </script>
 
 <style scoped>
-/* 动画效果 */
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.2s ease;
@@ -518,7 +432,6 @@ watch(searchTerm, (newVal) => {
   opacity: 0;
 }
 
-/* 搜索界面样式 */
 .search-overlay {
   position: fixed;
   top: 0;
@@ -545,7 +458,6 @@ watch(searchTerm, (newVal) => {
   flex-direction: column;
 }
 
-/* 深色模式支持 */
 @media (prefers-color-scheme: dark) {
   .search-container {
     background-color: rgba(30, 30, 30, 0.95);
@@ -553,7 +465,6 @@ watch(searchTerm, (newVal) => {
   }
 }
 
-/* 搜索输入框 */
 .search-input-wrapper {
   display: flex;
   align-items: center;
@@ -588,7 +499,6 @@ watch(searchTerm, (newVal) => {
   color: #666;
 }
 
-/* 加载指示器 */
 .loading-indicator {
   display: flex;
   align-items: center;
@@ -611,7 +521,6 @@ watch(searchTerm, (newVal) => {
   to { transform: rotate(360deg); }
 }
 
-/* 搜索结果 */
 .search-results {
   overflow-y: auto;
   max-height: 60vh;
@@ -719,7 +628,6 @@ kbd {
   }
 }
 
-/* 无结果状态 */
 .no-results {
   padding: 32px 16px;
   text-align: center;
@@ -755,7 +663,6 @@ kbd {
   background-color: #2980b9;
 }
 
-/* 初始状态 - 最近搜索和常用应用 */
 .start-search {
   padding: 16px;
 }
@@ -821,7 +728,6 @@ kbd {
   width: 100%;
 }
 
-/* 响应式调整 */
 @media (max-width: 640px) {
   .search-overlay {
     padding-top: 80px;
