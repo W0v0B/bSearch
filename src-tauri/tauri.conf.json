@@ -14,10 +14,9 @@
       {
         "label": "main",
         "title": "bsearch",
-        "maximized": true,
-        "visible": false,
-        "transparent": true,
-        "decorations": false
+        "width": 800,
+        "height": 600,
+        "visible": false
       }
     ],
     "security": {
