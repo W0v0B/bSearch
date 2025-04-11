@@ -59,7 +59,7 @@
               @mouseenter="selectedIndex = getAbsoluteIndex(index, 'app')"
             >
               <div class="result-icon">
-                <img :src="result.iconPath || '/app-icon-placeholder.svg'" :alt="result.title">
+                <img :src="result.icon_path || '/app-icon-placeholder.svg'" :alt="result.title">
               </div>
               <div class="result-details">
                 <div class="result-title">{{ result.title }}</div>
@@ -81,7 +81,7 @@
               @mouseenter="selectedIndex = getAbsoluteIndex(index, 'web')"
             >
               <div class="result-icon">
-                <img :src="result.iconPath || '/web-icon-placeholder.svg'" :alt="result.title">
+                <img :src="result.icon_path || '/web-icon-placeholder.svg'" :alt="result.title">
               </div>
               <div class="result-details">
                 <div class="result-title">{{ result.title }}</div>
@@ -152,7 +152,7 @@
                 @click="executeResult(app)"
               >
                 <div class="frequent-app-icon">
-                  <img :src="app.iconPath || '/app-icon-placeholder.svg'" :alt="app.title">
+                  <img :src="app.icon_path || '/app-icon-placeholder.svg'" :alt="app.title">
                 </div>
                 <div class="frequent-app-name">{{ app.title }}</div>
               </div>
@@ -171,7 +171,7 @@ import { invoke } from '@tauri-apps/api/core'; // Tauri核心API，用于与后�
 import { Window } from "@tauri-apps/api/window" // Tauri窗口管理API
 
 // 创建应用窗口实例
-const appWindow = new Window('theUniqueLabel');
+const appWindow = new Window('main');
 
 // 状态管理部分：
 // 控制搜索界面的显示状态
@@ -234,6 +234,21 @@ async function performSearch(): Promise<void> {
     const apps = await invoke('search_apps', { 
       query: searchTerm.value.trim() 
     }) as any[];
+    console.log('Received app:', apps);
+
+    const appsWithIcons = await Promise.all(apps.map(async (app) => {
+      try {
+        if (app.icon_path) {
+          // 获取图标数据
+          const iconData = await invoke('get_icon_data', { path: app.icon_path });
+          return { ...app, icon_path: iconData };
+        }
+        return app;
+      } catch (e) {
+        console.error('Failed to load icon:', e);
+        return app;
+      }
+    }));
     
     // 模拟网络搜索结果
     const webSearchResults = [
@@ -241,18 +256,18 @@ async function performSearch(): Promise<void> {
         type: 'web',
         title: `搜索 "${searchTerm.value}" - Google`,
         url: `https://www.google.com/search?q=${encodeURIComponent(searchTerm.value)}`,
-        iconPath: '/google-icon.svg'
+        icon_path: '/google-icon.svg'
       },
       {
         type: 'web',
         title: `搜索 "${searchTerm.value}" - Bing`,
         url: `https://www.bing.com/search?q=${encodeURIComponent(searchTerm.value)}`,
-        iconPath: '/bing-icon.svg'
+        icon_path: '/edge-icon.svg'
       }
     ];
     
     // 合并结果
-    results.value = [...apps, ...webSearchResults];
+    results.value = [...appsWithIcons, ...webSearchResults];
     selectedIndex.value = 0;
   } catch (error) {
     console.error('搜索失败:', error);
@@ -330,9 +345,19 @@ async function executeResult(result: any): Promise<void> {
  * 2. 添加到最近搜索记录
  * 3. 隐藏搜索界面
  */
-async function searchWeb(query: string): Promise<void> {
+ async function searchWeb(query: string, browser: string = 'google'): Promise<void> {
   try {
-    await invoke('search_web', { query });
+    let searchUrl;
+    
+    // 根据浏览器类型构建URL
+    if (browser.toLowerCase() === 'edge') {
+      searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+    } else {
+      // 默认使用 Google
+      searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    }
+    
+    await invoke('open_url', { url: searchUrl });
     addToRecentSearches(query);
     hideSearch();
   } catch (error) {
@@ -383,16 +408,46 @@ async function showSearch() {
 }
 
 // 隐藏搜索界面
-function hideSearch() {
+async function hideSearch() {
   isVisible.value = false;
   searchTerm.value = '';
   results.value = [];
+  try {
+    await invoke('hide_main_window');
+    console.log('Window hidden via hideSearch');
+  } catch (error) {
+    console.error("Failed to hide window:", error);
+  }
 }
 
 // 加载常用应用
 async function loadFrequentApps() {
   try {
-    frequentApps.value = await invoke('get_frequent_apps') as any[];
+    // 1. 从后端获取常用应用列表（包含原始文件路径）
+    const appsFromBackend = await invoke('get_frequent_apps') as any[];
+
+    // 2. 异步处理图标路径转换
+    const appsWithDataUrls = await Promise.all(appsFromBackend.map(async (app) => {
+      // 如果存在 icon_path 并且它看起来像一个本地路径 (避免处理可能已经是 data URL 的情况)
+      if (app.icon_path && !app.icon_path.startsWith('data:')) {
+        try {
+          // 调用后端命令获取 Data URL
+          const iconDataUrl = await invoke('get_icon_data', { path: app.icon_path });
+          // 返回带有更新后 icon_path 的新应用对象
+          return { ...app, icon_path: iconDataUrl };
+        } catch (e) {
+          console.error(`Failed to load icon data for ${app.title}:`, e);
+          // 如果加载失败，可以返回原对象或设置一个默认图标路径/Data URL
+          return { ...app, icon_path: '/app-icon-placeholder.svg' }; // 或者 null
+        }
+      }
+      // 如果没有 icon_path 或已经是 data URL，直接返回原对象
+      return app;
+    }));
+
+    // 3. 将处理后的列表（包含 Data URL）赋值给 ref
+    frequentApps.value = appsWithDataUrls;
+
   } catch (error) {
     console.error('加载常用应用失败:', error);
     frequentApps.value = [];
@@ -415,11 +470,11 @@ onMounted(() => {
   }
   
   // 监听窗口事件
-  appWindow.listen('show', () => {
+  appWindow.listen('window-shown', () => {
     showSearch();
   });
   
-  appWindow.listen('hide', () => {
+  appWindow.listen('window-hidden', () => {
     hideSearch();
   });
 });
