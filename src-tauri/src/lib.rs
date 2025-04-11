@@ -546,9 +546,7 @@ impl AppCache {
             let last_update_clone = Arc::clone(&self.last_update);
             let is_updating_clone = Arc::clone(&self.is_updating);
             
-            std::thread::spawn(move || {
-                let start_time = std::time::Instant::now();
-                
+            std::thread::spawn(move || {                
                 let apps = collect_all_apps();
                 
                 {
@@ -655,7 +653,7 @@ fn setup_global_hotkeys<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn s
     let receiver = GlobalHotKeyEvent::receiver();
 
     std::thread::spawn(move || {
-        for event in receiver.iter() {
+        for _event in receiver.iter() {
 
             if let Some(window) = app_handle.get_webview_window("main") {
                 match window.is_visible() {
